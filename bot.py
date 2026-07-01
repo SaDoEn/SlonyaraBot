@@ -123,6 +123,11 @@ async def handle_voice(message: types.Message):
     processing_msg = await message.reply("Слоняра слухає та розшифровує... 🎧")
 
     try:
+        # Перевірка чи взагалі завантажились ключі
+        if not GEMINI_KEYS:
+            await processing_msg.edit_text("❌ Помилка конфігурації: Список API-ключів порожній. Перевірте змінні оточення на Render.")
+            return
+
         voice = message.voice
         file_info = await bot.get_file(voice.file_id)
         local_filename = f"{voice.file_id}.ogg"
@@ -143,10 +148,14 @@ async def handle_voice(message: types.Message):
         )
 
         response = None
-        # Пробуємо кожен ключ по черзі, якщо вилітає ліміт 429
+        success = False
+        
+        # Пробуємо кожен ключ по черзі
         for i in range(len(GEMINI_KEYS)):
             try:
+                logging.info(f"Пробуємо розпізнати через Gemini за допомогою ключа №{i}...")
                 client = get_gemini_client(i)
+                
                 response = client.models.generate_content(
                     model='gemini-2.5-flash',
                     contents=[
@@ -155,17 +164,19 @@ async def handle_voice(message: types.Message):
                     ],
                     config=genai_types.GenerateContentConfig(temperature=0.0)
                 )
-                # Якщо запит пройшов успішно — перериваємо цикл перебору ключів
+                
+                # Якщо ми дійшли сюди і не вилетіла помилка — запит успішний!
+                success = True
                 break
+                
             except Exception as e:
-                if "429" in str(e) or "RESOURCE_EXHAUSTED" in str(e):
-                    logging.warning(f"Ключ №{i} вичерпав ліміт, пробуємо наступний...")
-                    continue
-                else:
-                    raise e
+                # Фіксуємо точну помилку в логах Render, щоб ми бачили, що саме не подобається Google
+                logging.error(f"⚠️ Ключ №{i} видав помилку: {e}")
+                # Переходимо до наступного ключа, що б не сталося
+                continue
 
-        if response is None:
-            await processing_msg.edit_text("⚠️ Усі безкоштовні ключі Слоняри на сьогодні вичерпали ліміт запитів. Спробуйте пізніше.")
+        if not success or response is None:
+            await processing_msg.edit_text("⚠️ Усі безкоштовні ключі Слоняри на сьогодні вичерпали ліміт запитів або тимчасово недоступні. Спробуйте пізніше.")
             return
 
         text_result = response.text.strip() if response.text else ""
@@ -175,8 +186,8 @@ async def handle_voice(message: types.Message):
         await processing_msg.edit_text(f"**Розшифровка:**\n\n{text_result}", parse_mode="Markdown")
 
     except Exception as e:
-        logging.error(f"Помилка розпізнавання: {e}")
-        await processing_msg.edit_text("Ой, щось пішло не так при обробці... Спробуйте ще раз.")
+        logging.error(f"Критична помилка в handle_voice: {e}")
+        await processing_msg.edit_text("Ой, щось пішло не так при обробці файлу... Спробуйте ще раз.")
         
 # Сервер-заглушка для Render (приймає порт автоматично)
 async def handle_render_health(request):
