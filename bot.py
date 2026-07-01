@@ -14,11 +14,23 @@ logging.basicConfig(level=logging.INFO)
 
 # Токени
 BOT_TOKEN = os.getenv("BOT_TOKEN")
-GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+
+# Зчитуємо рядок із ключами, які вказані через кому в налаштуваннях Render
+raw_keys = os.getenv("GEMINI_API_KEYS", "")
+# Розбиваємо рядок на окремі ключі та очищаємо від зайвих пробілів
+GEMINI_KEYS = [k.strip() for k in raw_keys.split(",") if k.strip()]
+
+# Якщо раптом забув додати нову змінну, спробуємо стару поодиноку змінну для зворотної сумісності
+if not GEMINI_KEYS and os.getenv("GEMINI_API_KEY"):
+    GEMINI_KEYS = [os.getenv("GEMINI_API_KEY")]
 
 bot = Bot(token=BOT_TOKEN)
 dp = Dispatcher()
-ai_client = genai.Client(api_key=GEMINI_API_KEY)
+
+# Функція для створення клієнта на льоту з потрібним ключем
+def get_gemini_client(index):
+    key = GEMINI_KEYS[index % len(GEMINI_KEYS)]
+    return genai.Client(api_key=key)
 
 DB_NAME = "chats_config.db"
 
@@ -111,7 +123,6 @@ async def handle_voice(message: types.Message):
     processing_msg = await message.reply("Слоняра слухає та розшифровує... 🎧")
 
     try:
-        # Завантажуємо файл
         voice = message.voice
         file_info = await bot.get_file(voice.file_id)
         local_filename = f"{voice.file_id}.ogg"
@@ -121,43 +132,51 @@ async def handle_voice(message: types.Message):
             audio_data = f.read()
         os.remove(local_filename)
 
-        # Промпт з інструкціями для шумів та коротких слів
         prompt = (
             f"Ти — професійний аудіо-транскрибатор. Твоє завдання — перекласти це аудіо в текст слово в слово.\n"
             f"Дозволені мови в цьому чаті: {target_langs}.\n"
             f"ПРАВИЛА ОБРОБКИ:\n"
-            f"1. Якщо в аудіо є фоновий шум, зітхання чи перешкоди — ігноруй їх і намагайся почути голос.\n"
-            f"2. Якщо повідомлення дуже коротке (навіть 1 слово на 1 секунду), обов'язково запиши його текстом.\n"
+            f"1. Якщо в аудіо є фоновий шум — ігноруй його.\n"
+            f"2. Якщо повідомлення дуже коротке, обов'язково запиши його текстом.\n"
             f"3. Якщо використовується суржик, запиши його ТОЧНО так, як людина його вимовляє.\n"
-            f"4. Твоя відповідь повинна містити ВИКЛЮЧНО розпізнаний текст. Не додавай жодних своїх коментарів чи фраз."
+            f"4. Твоя відповідь повинна містити ВИКЛЮЧНО розпізнаний текст."
         )
 
-        # Запит до Gemini з низькою температурою для кращої точності на коротких звуках
-        response = ai_client.models.generate_content(
-            model='gemini-2.5-flash',
-            contents=[
-                genai_types.Part.from_bytes(data=audio_data, mime_type='audio/ogg'),
-                prompt
-            ],
-            config=genai_types.GenerateContentConfig(
-                temperature=0.0
-            )
-        )
+        response = None
+        # Пробуємо кожен ключ по черзі, якщо вилітає ліміт 429
+        for i in range(len(GEMINI_KEYS)):
+            try:
+                client = get_gemini_client(i)
+                response = client.models.generate_content(
+                    model='gemini-2.5-flash',
+                    contents=[
+                        genai_types.Part.from_bytes(data=audio_data, mime_type='audio/ogg'),
+                        prompt
+                    ],
+                    config=genai_types.GenerateContentConfig(temperature=0.0)
+                )
+                # Якщо запит пройшов успішно — перериваємо цикл перебору ключів
+                break
+            except Exception as e:
+                if "429" in str(e) or "RESOURCE_EXHAUSTED" in str(e):
+                    logging.warning(f"Ключ №{i} вичерпав ліміт, пробуємо наступний...")
+                    continue
+                else:
+                    raise e
+
+        if response is None:
+            await processing_msg.edit_text("⚠️ Усі безкоштовні ключі Слоняри на сьогодні вичерпали ліміт запитів. Спробуйте пізніше.")
+            return
 
         text_result = response.text.strip() if response.text else ""
-        
         if not text_result or len(text_result) < 1:
-            text_result = "[Не вдалося чітко розпізнати слова в цьому голосовому]"
+            text_result = "[Не вдалося чітко розпізнати слова]"
 
         await processing_msg.edit_text(f"**Розшифровка:**\n\n{text_result}", parse_mode="Markdown")
 
     except Exception as e:
         logging.error(f"Помилка розпізнавання: {e}")
-        error_str = str(e)
-        if "429" in error_str or "RESOURCE_EXHAUSTED" in error_str:
-            await processing_msg.edit_text("⚠️ У Слоняри закінчився безкоштовний ліміт запитів на цю хвилину/день. Спробуйте трохи пізніше або підключіть Pay-as-you-go в AI Studio.")
-        else:
-            await processing_msg.edit_text("Ой, щось пішло не так при обробці... Спробуйте записати ще раз.")
+        await processing_msg.edit_text("Ой, щось пішло не так при обробці... Спробуйте ще раз.")
         
 # Сервер-заглушка для Render (приймає порт автоматично)
 async def handle_render_health(request):
