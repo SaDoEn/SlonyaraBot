@@ -121,16 +121,25 @@ async def handle_voice(message: types.Message):
         os.remove(local_filename)
 
         prompt = (
-            f"Ти — аудіо-транскрибатор. Твоє завдання — перевести аудіо в текст слово в слово. "
-            f"Дозволені мови в цьому чаті: {target_langs}. "
-            f"ВАЖЛИВО: Якщо в аудіо використовується суржик (суміш українських та російських слів), "
-            f"запиши його ТОЧНО так, як людина його вимовляє, не виправляй суржик на чисту мову! "
-            f"Якщо мова аудіо не входить до списку дозволених ({target_langs}), просто напиши: '[Повідомлення мовою, яка вимкнена в налаштуваннях бота]'."
+            f"Переведи це аудіо в текст слово в слово. "
+            f"Дозволені мови: {target_langs}. "
+            f"Якщо в аудіо суржик, запиши його ТОЧНО так, як людина його вимовляє. "
+            f"Якщо мова не з переліку ({target_langs}), напиши: '[Повідомлення мовою, яка вимкнена в налаштуваннях бота]'."
         )
 
+        # Передаємо інструкцію як системну, а аудіо та промпт — як вміст
         response = ai_client.models.generate_content(
             model='gemini-2.5-flash',
-            contents=[genai_types.Part.from_bytes(data=audio_data, mime_type='audio/ogg'), prompt]
+            contents=[
+                genai_types.Part.from_bytes(
+                    data=audio_data,
+                    mime_type='audio/ogg',
+                ),
+                prompt
+            ],
+            config=genai_types.GenerateContentConfig(
+                system_instruction="Ти — професійний транскрибатор. Твоє завдання — виводити ТІЛЬКИ чистий розпізнаний текст з аудіофайлу. Нічого від себе не додавай, не коментуй і не повторюй інструкції."
+            )
         )
 
         text_result = response.text if response.text else "[Не вдалося розпізнати мову]"
