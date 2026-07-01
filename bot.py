@@ -185,21 +185,21 @@ async def handle_render_health(request):
 async def main():
     init_db()
     
-    # Запускаємо довго опитування телеграм бота у фоні
-    asyncio.create_task(dp.start_polling(bot))
-    
-    # Піднімаємо веб-сервер на порт, який виділить Render (за замовчуванням 10000)
-    port = int(os.getenv("PORT", 10000))
+    # 1. Спочатку створюємо веб-додаток для Render
     app = web.Application()
     app.router.add_get('/', handle_render_health)
     runner = web.AppRunner(app)
     await runner.setup()
+    
+    # 2. Негайно піднімаємо порт, щоб Render відразу бачив: сервіс живий
+    port = int(os.getenv("PORT", 10000))
     site = web.TCPSite(runner, '0.0.0.0', port)
     await site.start()
+    logging.info(f"Веб-сервер успішно запущено на порту {port}")
     
-    # Не даємо скрипту закритися
-    while True:
-        await asyncio.sleep(3600)
+    # 3. І тільки після цього запускаємо polling Телеграм бота (прямо в основному потоці)
+    logging.info("Стартуємо polling Телеграм бота...")
+    await dp.start_polling(bot)
 
 if __name__ == "__main__":
     asyncio.run(main())
