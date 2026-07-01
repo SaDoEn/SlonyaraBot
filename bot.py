@@ -111,6 +111,7 @@ async def handle_voice(message: types.Message):
     processing_msg = await message.reply("Слоняра слухає та розшифровує... 🎧")
 
     try:
+        # Завантажуємо файл з телеграму
         voice = message.voice
         file_info = await bot.get_file(voice.file_id)
         local_filename = f"{voice.file_id}.ogg"
@@ -120,35 +121,42 @@ async def handle_voice(message: types.Message):
             audio_data = f.read()
         os.remove(local_filename)
 
+        # Потужний промпт, заточений під шуми, короткі звуки та суржик
         prompt = (
-            f"Переведи це аудіо в текст слово в слово. "
-            f"Дозволені мови: {target_langs}. "
-            f"Якщо в аудіо суржик, запиши його ТОЧНО так, як людина його вимовляє. "
-            f"Якщо мова не з переліку ({target_langs}), напиши: '[Повідомлення мовою, яка вимкнена в налаштуваннях бота]'."
+            f"Ти — професійний аудіо-транскрибатор. Твоє завдання — перекласти це аудіо в текст слово в слово.\n"
+            f"Дозволені мови в цьому чаті: {target_langs}.\n"
+            f"ПРАВИЛА ОБРОБКИ:\n"
+            f"1. Якщо в аудіо є фоновий шум, зітхання, вітер чи перешкоди — ігноруй їх і намагайся почути людський голос.\n"
+            f"2. Якщо повідомлення дуже коротке (навіть одне слово, вигук чи частка на 1-2 секунди), обов'язково запиши його текстом.\n"
+            f"3. Якщо використовується суржик, запиши його ТОЧНО так, як людина його вимовляє.\n"
+            f"4. Твоя відповідь повинна містити ВИКЛЮЧНО розпізнаний текст. Не додавай жодних своїх коментарів, пояснень чи фраз на кшталт 'Ось ваш текст:'.\n"
+            f"5. Якщо в аудіо взагалі немає мови (суцільна тиша або тільки шум), напиши: [Не вдалося розпізнати мову]"
         )
 
-        # Передаємо інструкцію як системну, а аудіо та промпт — як вміст
+        # Викликаємо Gemini з налаштуванням низької температури (для точності)
         response = ai_client.models.generate_content(
             model='gemini-2.5-flash',
             contents=[
-                genai_types.Part.from_bytes(
-                    data=audio_data,
-                    mime_type='audio/ogg',
-                ),
+                genai_types.Part.from_bytes(data=audio_data, mime_type='audio/ogg'),
                 prompt
             ],
             config=genai_types.GenerateContentConfig(
-                system_instruction="Ти — професійний транскрибатор. Твоє завдання — виводити ТІЛЬКИ чистий розпізнаний текст з аудіофайлу. Нічого від себе не додавай, не коментуй і не повторюй інструкції."
+                temperature=0.0  # Робить модель максимально сфокусованою на деталях звуку
             )
         )
 
-        text_result = response.text if response.text else "[Не вдалося розпізнати мову]"
+        text_result = response.text.strip() if response.text else ""
+        
+        # Фінальна перевірка на випадок повної тиші
+        if not text_result or len(text_result) < 1:
+            text_result = "[Не вдалося чітко розпізнати слова в цьому голосовому]"
+
         await processing_msg.edit_text(f"**Розшифровка:**\n\n{text_result}", parse_mode="Markdown")
 
     except Exception as e:
-        logging.error(f"Помилка: {e}")
-        await processing_msg.edit_text("Ой, щось пішло не так... Спробуй ще раз.")
-
+        logging.error(f"Помилка розпізнавання: {e}")
+        await processing_msg.edit_text("Ой, щось пішло не так при обробці... Спробуй записати голосове ще раз.")
+        
 # Сервер-заглушка для Render (приймає порт автоматично)
 async def handle_render_health(request):
     return web.Response(text="Slonyara is alive and kicking!")
